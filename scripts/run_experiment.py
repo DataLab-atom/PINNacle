@@ -42,14 +42,35 @@ def compute_group_update(exp_avg, denom, group_weights):
     "stdout":           str,
   }
 }
+
+线程安全说明
+────────────
+run_experiment() 不再原地修改 src/optimizable/*.py。
+每次调用在 tempfile.mkdtemp() 中创建独立的隔离工作目录：
+
+  tmpdir/
+    benchmark_single.py  → ROOT/benchmark_single.py (symlink)
+    src/
+      __init__.py        → ROOT/src/__init__.py     (symlink)
+      model/             → ROOT/src/model/          (symlink dir)
+      optimizer/         → ROOT/src/optimizer/      (symlink dir)
+      ...其他子包...     → ROOT/src/...             (symlink dir)
+      optimizable/       (真实目录，含已打补丁的副本)
+
+子进程以 tmpdir 为 cwd 运行，sys.path[0]=tmpdir，
+`from src.optimizable.x import y` 会优先命中已打补丁的副本。
+多个线程可同时各自拥有独立的 tmpdir，完全无竞争。
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import shutil
 import sys
+import tempfile
 import textwrap
 import argparse
 import subprocess
@@ -104,19 +125,64 @@ def _parse_metrics(stdout: str) -> dict:
     return metrics
 
 
-def _run_scenario(scenario: dict, epochs: Optional[int]) -> dict:
+def _make_isolated_root(patched_files: dict[str, str]) -> Path:
+    """
+    创建隔离工作目录，使 benchmark_single.py 子进程看到已打补丁的 src/optimizable/。
+
+    patched_files: {文件名（仅 basename） -> 已打补丁的文件内容}
+
+    目录结构（tmpdir/）：
+      benchmark_single.py  → ROOT/benchmark_single.py (symlink)
+      src/
+        <其他子包>/        → ROOT/src/<子包>/         (symlink)
+        optimizable/       (真实目录，内含打补丁后的 .py 文件)
+
+    Python 以 tmpdir 为工作目录运行 benchmark_single.py 时，
+    sys.path[0] = tmpdir，from src.optimizable.x import y 命中此处的副本。
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="reevo_eval_"))
+
+    # benchmark_single.py — symlink，使子进程路径指向 tmpdir
+    (tmpdir / "benchmark_single.py").symlink_to(ROOT / "benchmark_single.py")
+
+    # src/ — 真实目录，其下各子包均为 symlink，唯独 optimizable/ 单独处理
+    src_tmp = tmpdir / "src"
+    src_tmp.mkdir()
+    for item in (ROOT / "src").iterdir():
+        if item.name == "optimizable":
+            continue  # 单独创建打补丁的副本
+        (src_tmp / item.name).symlink_to(item)
+
+    # src/optimizable/ — 独立副本，按需打补丁
+    opt_tmp = src_tmp / "optimizable"
+    opt_tmp.mkdir()
+    for f in OPTIMIZABLE.iterdir():
+        if not f.is_file():
+            continue
+        content = patched_files.get(f.name) or f.read_text(encoding="utf-8")
+        (opt_tmp / f.name).write_text(content, encoding="utf-8")
+
+    return tmpdir
+
+
+def _run_scenario(
+    scenario: dict,
+    epochs: Optional[int],
+    isolated_root: Optional[Path] = None,
+) -> dict:
     """运行单个场景（benchmark_single.py 子进程），返回指标 + returncode + stdout。"""
     pde    = scenario["pde"]
     method = scenario.get("method", "adam")
     iters  = epochs if epochs is not None else scenario.get("iter", 10000)
 
+    root = isolated_root if isolated_root is not None else ROOT
     cmd = [
-        sys.executable, str(ROOT / "benchmark_single.py"),
+        sys.executable, str(root / "benchmark_single.py"),
         "--pde",    pde,
         "--iter",   str(iters),
         "--method", method,
     ]
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
     stdout = proc.stdout + ("\n[STDERR]\n" + proc.stderr if proc.stderr.strip() else "")
 
     metrics = _parse_metrics(stdout)
@@ -140,7 +206,11 @@ def run_experiment(
     epochs: Optional[int] = None,
 ) -> dict:
     """
-    注入新函数实现，运行对应评估场景，返回指标字典，并还原所有文件。
+    注入新函数实现，运行对应评估场景，返回指标字典。
+
+    **线程安全**：此函数不修改任何共享文件。每次调用在独立的临时目录中
+    创建已打补丁的 src/optimizable/ 副本，子进程从该目录加载模块，
+    多线程并发调用时互不干扰。
 
     Args:
         replacements: 函数替换规格列表，每项：
@@ -168,43 +238,34 @@ def run_experiment(
         }
 
     Raises:
-        ValueError: 函数名不存在于目标文件。
-        RuntimeError: 文件注入失败（已自动还原）。
+        ValueError: scenarios 为 None 或函数名不存在于目标文件。
     """
     if scenarios is None:
         raise ValueError("scenarios 不能为 None，请由 pinnacle_api.evaluate_funcs 传入")
 
-    # 1. 注入函数（原子操作，失败即还原）
-    backups: dict[Path, str] = {}
-    try:
-        for rep in replacements:
-            fpath   = OPTIMIZABLE / rep["file"]
-            current = fpath.read_text(encoding="utf-8")
-            if fpath not in backups:
-                backups[fpath] = current
-            patched = _patch_source(current, rep["function"], rep["code"])
-            fpath.write_text(patched, encoding="utf-8")
-            print(f"[patch] {rep['file']}::{rep['function']}", file=sys.stderr)
-    except Exception as exc:
-        for path, orig in backups.items():
-            path.write_text(orig, encoding="utf-8")
-        raise RuntimeError(f"注入失败，已还原所有文件。原因：{exc}") from exc
+    # 1. 在内存中构建补丁内容（只读原文件，不写，线程安全）
+    patched_files: dict[str, str] = {}
+    for rep in replacements:
+        fname = rep["file"]
+        base  = patched_files.get(fname) or (OPTIMIZABLE / fname).read_text(encoding="utf-8")
+        patched_files[fname] = _patch_source(base, rep["function"], rep["code"])
+        print(f"[patch] {fname}::{rep['function']}", file=sys.stderr)
 
-    # 2. 运行各场景
+    # 2. 创建独立隔离工作目录（每次调用都有各自的 tmpdir，线程安全）
+    tmpdir = _make_isolated_root(patched_files)
+
+    # 3. 运行各场景，结束后清理临时目录
     results: dict[str, dict] = {}
     try:
         for sc in scenarios:
             key = f"{sc['pde']}_{sc.get('method', 'adam')}"
             print(f"[run]   {key}, epochs={epochs or sc.get('iter', '?')}", file=sys.stderr)
-            results[key] = _run_scenario(sc, epochs)
+            results[key] = _run_scenario(sc, epochs, isolated_root=tmpdir)
             rc    = results[key]["returncode"]
             l2re  = results[key].get("final_l2re", "N/A")
             print(f"[done]  {key}, returncode={rc}, final_l2re={l2re}", file=sys.stderr)
     finally:
-        # 3. 无论是否出错，还原所有文件
-        for path, orig in backups.items():
-            path.write_text(orig, encoding="utf-8")
-        print("[restore] 所有 optimizable 文件已还原", file=sys.stderr)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     return results
 
