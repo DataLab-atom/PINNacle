@@ -6,3 +6,10 @@ scikit-learn==1.2.2
 scikit-optimize==0.9.0
 scipy==1.10.1
 torch==2.0.0
+
+# ── ReEvo2D / LLM 优化器依赖 ──────────────────────────────────────────────────
+openai>=1.0.0          # OpenAI / DeepSeek / 兼容接口 LLM 客户端
+omegaconf>=2.3.0       # ReEvo2D cfg 对象（DictConfig）
+# 可选：按需取消注释
+# zhipuai              # GLM-4 系列模型
+# litellm              # 统一多模型接口（可替代 openai 直连）

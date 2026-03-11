@@ -6,6 +6,8 @@ import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
+from src.optimizable.multiadam_optimizable import compute_group_update
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,8 +103,7 @@ def sadam(
 
         step_size = lr / bias_correction1
 
-        update_raw = exp_avg / denom  # raw update for every loss group
-        update = (update_raw * group_weights.view((-1, ) + (1, ) * (exp_avg.dim() - 1))).sum(dim=0)  # weighted sum for current param
+        update = compute_group_update(exp_avg, denom, group_weights)  # [OPTIMIZABLE]
 
         if agg_momentum:
             bias_correction1_, bias_correction2_ = 1 - agg_beta1**step, 1 - agg_beta2**step

@@ -1,5 +1,7 @@
 import torch
 
+from src.optimizable.lra_optimizable import adapt_boundary_weight
+
 
 class LR_Adaptor(torch.optim.Optimizer):
     """
@@ -40,21 +42,22 @@ class LR_Adaptor(torch.optim.Optimizer):
                 if p.grad is not None:
                     m_grad_r = max(m_grad_r, torch.max(torch.abs(p.grad)).item())
 
-        # adapt the weights for each bc term
+        # [OPTIMIZABLE] 边界条件权重自适应
         for i in range(self.num_pde, len(self.loss_weight)):
-            sum = 0
-            count = 0
+            grad_sum = 0
+            grad_count = 0
             with torch.enable_grad():
                 self.zero_grad()
                 losses[i].backward(retain_graph=True)
             for group in self.param_groups:
                 for p in group['params']:
                     if p.grad is not None:
-                        sum += torch.sum(torch.abs(p.grad))
-                        count += torch.numel(p.grad)
-            mean = sum / count
-            lambda_hat = m_grad_r / (mean * self.loss_weight[i])
-            self.loss_weight[i] = (1 - self.alpha) * self.loss_weight[i] + self.alpha * lambda_hat
+                        grad_sum += torch.sum(torch.abs(p.grad))
+                        grad_count += torch.numel(p.grad)
+            grad_mean = (grad_sum / grad_count).item()
+            self.loss_weight[i] = adapt_boundary_weight(
+                m_grad_r, grad_mean, self.loss_weight[i], self.alpha
+            )
 
         with torch.enable_grad():
             self.zero_grad()

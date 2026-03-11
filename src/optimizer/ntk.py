@@ -1,6 +1,8 @@
 import deepxde as dde
 import torch
 
+from src.optimizable.ntk_optimizable import adapt_loss_weights
+
 
 class LR_Adaptor_NTK(torch.optim.Optimizer):
     """
@@ -57,9 +59,12 @@ class LR_Adaptor_NTK(torch.optim.Optimizer):
                     m_grad_b.append(torch.abs(p.grad).reshape(-1))
         m_grad_b = torch.sum(torch.cat(m_grad_b)**2).item()
 
-        for i in range(self.pde.num_pde):
-            self.loss_weight[i] = (m_grad_r + m_grad_b) / m_grad_r
-        for i in range(self.pde.num_pde, len(self.loss_weight)):
-            self.loss_weight[i] = (m_grad_r + m_grad_b) / m_grad_b
+        # [OPTIMIZABLE] 权重自适应策略
+        num_bc = len(self.loss_weight) - self.pde.num_pde
+        self.loss_weight[:] = adapt_loss_weights(
+            m_grad_r, m_grad_b,
+            self.pde.num_pde, num_bc,
+            list(self.loss_weight), self.iter,
+        )
 
         return self.optimizer.step(closure)

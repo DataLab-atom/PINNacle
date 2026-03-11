@@ -1,5 +1,7 @@
 import numpy as np
 
+from src.optimizable.sampling_optimizable import select_resample_points
+
 
 def rar_wrapper(pde, model, conf):
     data = model.data
@@ -20,15 +22,16 @@ def rar_wrapper(pde, model, conf):
             X = model.train_state.X_train
             f = model.predict(X, operator=pde.pde)
             err = np.abs(f).squeeze()
-            if err.ndim == 2: 
+            if err.ndim == 2:
                 err = np.sum(err, axis=0)
             elif err.ndim > 2:
                 raise ValueError("RAR: Error occured when calculate pde residue: err.ndim > 2")
             mean_err = np.mean(err)
             print(f'mean residual: {mean_err}')
 
-            top_k_idx = np.argsort(err)[-count:]
-            data.add_anchors(X[top_k_idx])
+            # [OPTIMIZABLE] 重采样选点策略
+            new_points = select_resample_points(X, err, count)
+            data.add_anchors(new_points)
             train(*args, **kwargs, disregard_previous_best=True, save_model=False)
 
     return wrapper
