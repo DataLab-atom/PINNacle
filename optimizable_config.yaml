@@ -24,12 +24,37 @@
 # ============================================================
 
 
+# ── 全局评估场景（可选）──────────────────────────────────────────────────────
+#
+# 当 global_eval_scenarios 非空时，所有 registered 函数在这套 PDE 列表上联合评估：
+#   - 所有函数代码同时注入，在同一次训练中共同生效
+#   - 若某个 PDE 场景不调用某函数（如 steady-state PDE 不调 apply_ic_decay），
+#     该函数代码仍被注入但不被执行，不影响该场景的 L2RE
+#   - 适用于：想把多个优化目标作为一个整体衡量，而不是逐函数独立评估
+#
+# 当 global_eval_scenarios 为空列表时，退回到每个函数自己的 eval_scenarios。
+#
+# 建议：在 global_eval_scenarios 中覆盖所有你注册的方法类型，
+# 这样每个函数都至少有一个 PDE 能真正调用并考察它。
+
+global_eval_scenarios:
+  - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}   # → compute_group_update, fnn_forward_body
+  - {pde: Poisson2D_Classic, method: ntk,       iter: 5000, weight: 1.0}   # → adapt_loss_weights, fnn_forward_body
+  - {pde: Heat2D_Multiscale, method: lra,        iter: 5000, weight: 1.0}  # → adapt_boundary_weight, fnn_forward_body
+  - {pde: Burgers1D,         method: rar,        iter: 5000, weight: 1.0}  # → select_resample_points, fnn_forward_body
+  - {pde: Wave1D,            method: adam,       iter: 5000, weight: 0.8}  # → apply_ic_decay, fnn_forward_body
+  - {pde: Burgers1D,         method: laaf,       iter: 5000, weight: 0.8}  # → laaf_scale
+  - {pde: Poisson2D_Classic, method: lbfgs,      iter: 5000, weight: 0.8}  # → select_optimizer
+
+
 # ── 已激活的优化目标 ────────────────────────────────────────────────────────
 # register_optimizable.py --apply 会确保这些函数被提取到 src/optimizable/ 并接管调用
 
 registered:
 
-  - source_file:  src/optimizable/multiadam_optimizable.py   # 已提取，直接引用
+  # ── 训练策略层 ───────────────────────────────────────────────────────────
+
+  - source_file:  src/optimizable/multiadam_optimizable.py
     function:     compute_group_update
     output_file:  src/optimizable/multiadam_optimizable.py
     description:  "MultiAdam 多损失组梯度融合：将各损失组的 Adam 更新量加权合并为最终参数更新"
@@ -50,7 +75,7 @@ registered:
     output_file:  src/optimizable/sampling_optimizable.py
     description:  "RAR 残差自适应选点：从训练集中选取高残差点加入锚点集"
     eval_scenarios:
-      - {pde: Burgers1D,        method: rar, iter: 5000, weight: 1.0}
+      - {pde: Burgers1D,         method: rar, iter: 5000, weight: 1.0}
       - {pde: Heat2D_Multiscale, method: rar, iter: 5000, weight: 1.0}
 
   - source_file:  src/optimizable/lra_optimizable.py
@@ -61,15 +86,23 @@ registered:
       - {pde: Burgers1D,         method: lra, iter: 5000, weight: 1.0}
       - {pde: Poisson2D_Classic, method: lra, iter: 5000, weight: 1.0}
 
-  # ── 模型结构层（新增）─────────────────────────────────────────────────────
+  - source_file:  src/optimizable/adam_lbfgs_optimizable.py
+    function:     select_optimizer
+    output_file:  src/optimizable/adam_lbfgs_optimizable.py
+    description:  "Adam→L-BFGS 切换决策：决定当前步使用哪个优化器，可探索自适应切换策略"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: lbfgs, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: lbfgs, iter: 5000, weight: 1.0}
+
+  # ── 模型结构层 ───────────────────────────────────────────────────────────
 
   - source_file:  src/optimizable/hard_constraint_optimizable.py
     function:     apply_ic_decay
     output_file:  src/optimizable/hard_constraint_optimizable.py
-    description:  "IC 硬约束衰减混合：用时间衰减权重将初始条件与网络输出混合，确保 t=0 时精确满足 IC"
+    description:  "IC 硬约束衰减混合：用时间衰减权重将初始条件与网络输出混合，确保 t=0 精确满足 IC"
     eval_scenarios:
-      - {pde: Burgers1D,   method: adam, iter: 5000, weight: 1.0}
-      - {pde: Wave1D,      method: adam, iter: 5000, weight: 1.0}
+      - {pde: Burgers1D, method: adam, iter: 5000, weight: 1.0}
+      - {pde: Wave1D,    method: adam, iter: 5000, weight: 1.0}
 
   - source_file:  src/optimizable/laaf_optimizable.py
     function:     laaf_scale
@@ -121,8 +154,8 @@ candidates:
     description:  "[低价值] 傅里叶空间误差计算：当前按低/中/高频段分组，
                   可探索不同频段划分策略对训练监控的影响"
     eval_scenarios:
-      - {pde: Wave1D,             method: adam, iter: 5000, weight: 1.0}
-      - {pde: Heat2D_Multiscale,  method: adam, iter: 5000, weight: 1.0}
+      - {pde: Wave1D,            method: adam, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale, method: adam, iter: 5000, weight: 1.0}
 
   # ── 几何工具类 ────────────────────────────────────────────────────────────
   - source_file:  src/utils/geom.py

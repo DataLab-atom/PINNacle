@@ -115,26 +115,70 @@ python scripts/register_optimizable.py --list
 
 #### 训练策略层（optimizer / sampler / weight）
 
-| 函数名 | 来源文件 | 优化价值 | 探索方向 |
-|--------|----------|----------|----------|
-| `compute_group_update` | `src/optimizable/multiadam_optimizable.py` | ⭐⭐⭐ | 梯度投影、归一化融合、动态门控 |
-| `adapt_loss_weights` | `src/optimizable/ntk_optimizable.py` | ⭐⭐⭐ | EMA 平滑、对数尺度、分层适配 |
-| `select_resample_points` | `src/optimizable/sampling_optimizable.py` | ⭐⭐⭐ | 概率采样、多样性约束、课程式 |
-| `adapt_boundary_weight` | `src/optimizable/lra_optimizable.py` | ⭐⭐ | 自适应 alpha、权重裁剪、Trust Region |
-| `sadam` | `src/optimizer/multiadam.py` | ⭐⭐⭐ | AMSGrad、梯度裁剪、动量聚合 |
-| `use_gepinn` | `src/pde/baseclass.py` | ⭐⭐ | 高阶导数、曲率正则、选择性增强 |
-| `random_points` | `src/utils/geom.py` | ⭐⭐ | QMC、层次采样、贴边增强 |
+| 函数名 | 状态 | 优化价值 | 探索方向 |
+|--------|------|----------|----------|
+| `compute_group_update` | ✅ 已注册 | ⭐⭐⭐ | 梯度投影、归一化融合、动态门控 |
+| `adapt_loss_weights` | ✅ 已注册 | ⭐⭐⭐ | EMA 平滑、对数尺度、分层适配 |
+| `select_resample_points` | ✅ 已注册 | ⭐⭐⭐ | 概率采样、多样性约束、课程式 |
+| `adapt_boundary_weight` | ✅ 已注册 | ⭐⭐ | 自适应 alpha、权重裁剪、Trust Region |
+| `select_optimizer` | ✅ 已注册 | ⭐⭐ | 损失平台检测切换、梯度范数触发、软切换概率 |
+| `sadam` | 候选 | ⭐⭐⭐ | AMSGrad、梯度裁剪、动量聚合 |
+| `use_gepinn` | 候选 | ⭐⭐ | 高阶导数、曲率正则、选择性增强 |
+| `random_points` | 候选 | ⭐⭐ | QMC、层次采样、贴边增强 |
 
 #### 模型结构层（model architecture）
 
-| 函数名 | 来源文件 | 优化价值 | 探索方向 |
-|--------|----------|----------|----------|
-| `fnn_forward_body` | `src/optimizable/fnn_forward_optimizable.py` | ⭐⭐⭐ | 残差连接、Highway 网络、Modified MLP（Wang et al.）、Fourier 特征嵌入 |
-| `apply_ic_decay` | `src/optimizable/hard_constraint_optimizable.py` | ⭐⭐⭐ | sigmoid/tanh 衰减、多项式衰减、空间自适应混合权重 |
-| `laaf_scale` | `src/optimizable/laaf_optimizable.py` | ⭐⭐ | softplus(a) 有界缩放、归一化缩放、layer-wise vs element-wise |
+| 函数名 | 状态 | 优化价值 | 探索方向 |
+|--------|------|----------|----------|
+| `fnn_forward_body` | ✅ 已注册 | ⭐⭐⭐ | 残差连接、Highway 网络、Modified MLP（Wang et al.）、Fourier 特征嵌入 |
+| `apply_ic_decay` | ✅ 已注册 | ⭐⭐⭐ | sigmoid/tanh 衰减、多项式衰减、空间自适应混合权重 |
+| `laaf_scale` | ✅ 已注册 | ⭐⭐ | softplus(a) 有界缩放、归一化缩放、layer-wise vs element-wise |
 
-> **两层联合优化建议**：若同时开启训练策略层 + 模型结构层，建议将 `fnn_forward_body` 的
-> `weight` 设置为 1.5（加大权重），因为结构改变对不同 PDE 的影响差异更大，需要更稳健的适应度信号。
+> **两层联合优化建议**：使用 `global_eval_scenarios` 联合评估时，`fnn_forward_body` 在所有场景都生效，
+> 建议将其 `weight` 维持在 1.0，避免模型结构变化主导适应度信号而掩盖策略层的改进。
+
+---
+
+## 3b. 多 PDE 联合评估
+
+这是推荐的评估模式：所有注册函数在同一套 PDE 场景上**一起**评估，共享同一套代码注入。
+
+### 配置方式
+
+在 `optimizable_config.yaml` 中填写 `global_eval_scenarios`（已预配置）：
+
+```yaml
+global_eval_scenarios:
+  - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}   # 激活 compute_group_update + fnn_forward_body
+  - {pde: Poisson2D_Classic, method: ntk,       iter: 5000, weight: 1.0}   # 激活 adapt_loss_weights + fnn_forward_body
+  - {pde: Heat2D_Multiscale, method: lra,        iter: 5000, weight: 1.0}  # 激活 adapt_boundary_weight + fnn_forward_body
+  - {pde: Burgers1D,         method: rar,        iter: 5000, weight: 1.0}  # 激活 select_resample_points
+  - {pde: Wave1D,            method: adam,       iter: 5000, weight: 0.8}  # 激活 apply_ic_decay
+  - {pde: Burgers1D,         method: laaf,       iter: 5000, weight: 0.8}  # 激活 laaf_scale
+  - {pde: Poisson2D_Classic, method: lbfgs,      iter: 5000, weight: 0.8}  # 激活 select_optimizer
+```
+
+### 关键机制
+
+**"代码注入但不执行"的情况完全正常：**
+
+| 场景 | `apply_ic_decay` | `laaf_scale` | `fnn_forward_body` |
+|------|-----------------|--------------|-------------------|
+| Burgers1D + multiadam | ✓ 执行（有IC） | ✗ 未调用（非 laaf 方法） | ✓ 执行 |
+| Poisson2D + ntk | ✗ 未调用（无 IC，稳态） | ✗ 未调用 | ✓ 执行 |
+| Wave1D + adam | ✓ 执行（有IC） | ✗ 未调用 | ✓ 执行 |
+| Burgers1D + laaf | ✓ 执行（有IC） | ✓ 执行 | ✓ 执行 |
+
+- ✓ 执行的场景会直接反映在 L2RE 上，作为该函数的有效评估信号
+- ✗ 未调用的场景，该函数代码被注入但从未运行，L2RE 由其他已执行函数决定
+- **不存在"冲突"**：各函数的代码路径在运行时互相独立
+
+### 适应度聚合
+
+最终适应度 = Σ (L2RE_i × weight_i) / Σ weight_i
+
+只要 `global_eval_scenarios` 中每类函数至少有一个 PDE 场景真正调用它，
+该函数就能获得有效的进化信号。未被任何场景调用的函数相当于"搭便车"——不贡献正向信号，也不造成干扰。
 
 ---
 
