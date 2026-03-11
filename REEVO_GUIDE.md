@@ -9,6 +9,7 @@
 1. [整体架构](#1-整体架构)
 2. [快速开始](#2-快速开始)
 3. [选择优化目标](#3-选择优化目标——最重要的决策)
+   - [3b. 多 PDE 联合评估](#3b-多-pde-联合评估)
 4. [注册新的优化目标](#4-注册新的优化目标)
 5. [配置评估场景](#5-配置评估场景)
 6. [运行优化器](#6-运行优化器)
@@ -65,8 +66,8 @@ export OPENAI_BASE_URL=https://api.example.com/v1  # 如使用代理（可选）
 python main.py --model deepseek-coder --epochs 5000 --max-fe 200
 ```
 
-这会用默认的 4 个优化目标（MultiAdam 融合、NTK 权重、RAR 采样、LRA 更新），
-在 Burgers1D / Poisson2D / Heat2D_Multiscale 上跑 200 轮进化评估。
+这会用当前注册的 10 个优化目标（四大方向全覆盖），
+通过 `global_eval_scenarios` 在 8 个 PDE × 方法组合上联合评估，跑 200 轮进化。
 
 ### 查看进度
 
@@ -291,7 +292,22 @@ python scripts/register_optimizable.py --remove --function sadam
 
 评估场景决定"用什么 PDE、什么方法、训练多少步来判断函数好坏"。
 
-### 在 `optimizable_config.yaml` 中配置
+### 两种配置方式及优先级
+
+**方式一：`global_eval_scenarios`（推荐，全局生效）**
+
+所有注册函数在同一套场景上联合评估，同时注入、同时测试：
+
+```yaml
+global_eval_scenarios:           # 顶级字段，非空时优先于各函数的 eval_scenarios
+  - {pde: Burgers1D, method: multiadam, iter: 5000, weight: 1.0}
+  - {pde: Wave1D,    method: adam,      iter: 5000, weight: 0.8}
+  # ...
+```
+
+**方式二：`eval_scenarios`（逐函数独立评估）**
+
+当 `global_eval_scenarios` 为空列表时生效，每个函数用自己的场景单独评估：
 
 ```yaml
 registered:
@@ -301,6 +317,9 @@ registered:
       - {pde: Poisson2D_Classic, method: multiadam, iter: 5000, weight: 1.5}
       # weight 决定此场景在总适应度中的权重
 ```
+
+> **选哪种？** 优化目标之间有相互作用（如 `encode_input` 影响所有方法）时用 global；
+> 只想单独评估某一个函数时用 per-function。
 
 ### 支持的 PDE 名称
 
@@ -376,12 +395,14 @@ python main.py \
 ```
 总时间 ≈ max_fe × 每次评估时间
 
-每次评估时间：
-  单 PDE × 5000 步 ≈ 1-3 分钟（CPU）/ 20-40 秒（GPU）
-  默认 2 个场景 × 2-5 分钟 ≈ 4-10 分钟/评估
+每次评估时间（单 PDE × 5000 步）：
+  CPU：1-3 分钟 / GPU：20-40 秒
 
-max_fe=200, 2个场景, CPU：约 13-33 小时
-max_fe=200, 2个场景, GPU：约 1-2 小时
+使用 global_eval_scenarios（默认 8 个场景）：
+  CPU：8-24 分钟/评估，max_fe=200 约 27-80 小时
+  GPU：3-5 分钟/评估，max_fe=200 约 10-17 小时
+
+减少场景数量可线性缩短时间：保留 3 个关键场景 → GPU 约 3-5 小时
 ```
 
 ---
