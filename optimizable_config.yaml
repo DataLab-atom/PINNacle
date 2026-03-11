@@ -1,0 +1,117 @@
+# ============================================================
+# optimizable_config.yaml — PINNacle × ReEvo2D 优化目标配置
+# ============================================================
+#
+# 【使用流程】
+#
+#   1. 在 candidates 中挑选你想优化的函数，复制到 registered 区块
+#   2. 运行：python scripts/register_optimizable.py --apply
+#      → 自动提取函数、生成 src/optimizable/*.py、接管调用路径
+#   3. 运行：python main.py --model deepseek-coder --epochs 5000
+#
+# 【查看所有候选函数】
+#   python scripts/register_optimizable.py --list
+#
+# 【检查当前注册状态】
+#   python scripts/register_optimizable.py --status
+#
+# 【添加新的优化目标】
+#   python scripts/register_optimizable.py --add \
+#       --source src/optimizer/multiadam.py \
+#       --function sadam \
+#       --output multiadam_full \
+#       --desc "完整 MultiAdam 参数更新循环"
+# ============================================================
+
+
+# ── 已激活的优化目标 ────────────────────────────────────────────────────────
+# register_optimizable.py --apply 会确保这些函数被提取到 src/optimizable/ 并接管调用
+
+registered:
+
+  - source_file:  src/optimizable/multiadam_optimizable.py   # 已提取，直接引用
+    function:     compute_group_update
+    output_file:  src/optimizable/multiadam_optimizable.py
+    description:  "MultiAdam 多损失组梯度融合：将各损失组的 Adam 更新量加权合并为最终参数更新"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: multiadam, iter: 5000, weight: 1.0}
+
+  - source_file:  src/optimizable/ntk_optimizable.py
+    function:     adapt_loss_weights
+    output_file:  src/optimizable/ntk_optimizable.py
+    description:  "NTK 动态损失权重自适应：根据 PDE/BC 梯度模比值重新平衡各损失权重"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: ntk, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: ntk, iter: 5000, weight: 1.0}
+
+  - source_file:  src/optimizable/sampling_optimizable.py
+    function:     select_resample_points
+    output_file:  src/optimizable/sampling_optimizable.py
+    description:  "RAR 残差自适应选点：从训练集中选取高残差点加入锚点集"
+    eval_scenarios:
+      - {pde: Burgers1D,        method: rar, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale, method: rar, iter: 5000, weight: 1.0}
+
+  - source_file:  src/optimizable/lra_optimizable.py
+    function:     adapt_boundary_weight
+    output_file:  src/optimizable/lra_optimizable.py
+    description:  "LRA 边界条件权重 EMA 更新：自适应调整各 BC 损失的相对权重"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: lra, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: lra, iter: 5000, weight: 1.0}
+
+
+# ── 候选函数库（取消注释并 --apply 即可激活）────────────────────────────────
+# 每条候选项描述了函数来源和优化价值，供你选择
+
+candidates:
+
+  # ── 优化器类 ─────────────────────────────────────────────────────────────
+  - source_file:  src/optimizer/multiadam.py
+    function:     sadam
+    suggested_output: multiadam_sadam_optimizable
+    description:  "[高价值] 完整 MultiAdam 函数式 API：包含每参数的一阶/二阶矩更新
+                  和加权融合，可探索 AMSGrad、梯度裁剪、投影梯度等变体"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale, method: multiadam, iter: 5000, weight: 1.0}
+
+  # ── PDE 增强类 ────────────────────────────────────────────────────────────
+  - source_file:  src/pde/baseclass.py
+    function:     use_gepinn
+    suggested_output: gepinn_optimizable
+    description:  "[中价值] gPINN 梯度增强注入：决定对哪些 PDE 残差、沿哪些方向
+                  添加梯度正则化项，可探索高阶导数、曲率正则等变体"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: gepinn, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: gepinn, iter: 5000, weight: 1.0}
+
+  # ── 误差评估类 ────────────────────────────────────────────────────────────
+  - source_file:  src/utils/callbacks.py
+    function:     frmse_calc
+    suggested_output: frmse_optimizable
+    description:  "[低价值] 傅里叶空间误差计算：当前按低/中/高频段分组，
+                  可探索不同频段划分策略对训练监控的影响"
+    eval_scenarios:
+      - {pde: Wave1D,             method: adam, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale,  method: adam, iter: 5000, weight: 1.0}
+
+  # ── 几何工具类 ────────────────────────────────────────────────────────────
+  - source_file:  src/utils/geom.py
+    function:     random_points
+    suggested_output: geom_sampling_optimizable
+    description:  "[中价值] 复杂几何域内随机采样：当前基于 rejection sampling，
+                  可探索 QMC、层次采样、贴近边界增强等方案"
+    eval_scenarios:
+      - {pde: Poisson3D_ComplexGeometry, method: adam, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_ComplexGeometry,    method: adam, iter: 5000, weight: 1.0}
+
+  # ── 随机场生成类 ──────────────────────────────────────────────────────────
+  - source_file:  src/utils/random.py
+    function:     gaussian_random_field
+    suggested_output: random_field_optimizable
+    description:  "[中价值] 高斯随机场生成（用于 Darcy/Heat 系数采样）：
+                  当前功率谱衰减固定为 power=3，可探索自适应功率谱、各向异性场等"
+    eval_scenarios:
+      - {pde: Heat2D_VaryingCoef, method: adam, iter: 5000, weight: 1.0}
