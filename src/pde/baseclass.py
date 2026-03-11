@@ -1,5 +1,7 @@
 import deepxde as dde
 import numpy as np
+import torch
+from src.optimizable.causal_weight_optimizable import compute_causal_weights  # [OPTIMIZABLE]
 
 DEFAULT_NUM_DOMAIN_POINTS = 8192
 DEFAULT_NUM_BOUNDARY_POINTS = 2048
@@ -147,6 +149,31 @@ class BasePDE():
         for i in range(self.num_pde):
             if self.loss_config[i]['type'] != 'pde':
                 raise ValueError("All PDE loss should be set before Boundary loss to avoid potential issues with methods like NTK")
+
+    def use_causal(self, epsilon=1.0):
+        """为时变 PDE 启用时序因果损失加权（类似 use_gepinn 的用法）。"""
+        pde_original = self.pde
+
+        def pde_wrapper(x, u):
+            import torch as _torch
+            res = pde_original(x, u)
+            if not isinstance(res, (list, tuple)):
+                res = [res]
+            elif isinstance(res, tuple):
+                res = list(res)
+
+            # 提取时间坐标（最后一列）
+            if hasattr(x, 'shape') and x.shape[-1] > 1:
+                t = x[..., -1:]
+            else:
+                t = x
+
+            weights = compute_causal_weights(t, res, epsilon)  # [OPTIMIZABLE]
+
+            res_weighted = [r * weights for r in res]
+            return res_weighted[0] if len(res_weighted) == 1 else res_weighted
+
+        self.pde = pde_wrapper
 
     def use_gepinn(self):
         pde_original = self.pde

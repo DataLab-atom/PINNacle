@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from deepxde import config
 from deepxde.nn import NN
 from src.optimizable.fnn_forward_optimizable import fnn_forward_body  # [OPTIMIZABLE]
+from src.optimizable.input_encoding_optimizable import encode_input    # [OPTIMIZABLE]
 
 initializer_dict = {
     'Glorot normal': torch.nn.init.xavier_normal_,
@@ -44,7 +45,8 @@ class FNN(NN):
         x = inputs
         if self._input_transform is not None:
             x = self._input_transform(x)
-        x = fnn_forward_body(x, self.linears, self.activation)  # [OPTIMIZABLE]
+        x = encode_input(x, x.shape[-1])                          # [OPTIMIZABLE]
+        x = fnn_forward_body(x, self.linears, self.activation)    # [OPTIMIZABLE]
         if self._output_transform is not None:
             x = self._output_transform(inputs, x)
         return x

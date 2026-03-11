@@ -38,13 +38,14 @@
 # 这样每个函数都至少有一个 PDE 能真正调用并考察它。
 
 global_eval_scenarios:
-  - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}   # → compute_group_update, fnn_forward_body
-  - {pde: Poisson2D_Classic, method: ntk,       iter: 5000, weight: 1.0}   # → adapt_loss_weights, fnn_forward_body
-  - {pde: Heat2D_Multiscale, method: lra,        iter: 5000, weight: 1.0}  # → adapt_boundary_weight, fnn_forward_body
-  - {pde: Burgers1D,         method: rar,        iter: 5000, weight: 1.0}  # → select_resample_points, fnn_forward_body
-  - {pde: Wave1D,            method: adam,       iter: 5000, weight: 0.8}  # → apply_ic_decay, fnn_forward_body
-  - {pde: Burgers1D,         method: laaf,       iter: 5000, weight: 0.8}  # → laaf_scale
-  - {pde: Poisson2D_Classic, method: lbfgs,      iter: 5000, weight: 0.8}  # → select_optimizer
+  - {pde: Burgers1D,            method: multiadam, iter: 5000, weight: 1.0}   # → compute_group_update, fnn_forward_body, encode_input, compute_causal_weights
+  - {pde: Poisson2D_Classic,    method: ntk,       iter: 5000, weight: 1.0}   # → adapt_loss_weights, fnn_forward_body, encode_input
+  - {pde: Heat2D_Multiscale,    method: lra,       iter: 5000, weight: 1.0}   # → adapt_boundary_weight, fnn_forward_body, encode_input（多尺度问题对谱偏置最敏感）
+  - {pde: Burgers1D,            method: rar,       iter: 5000, weight: 1.0}   # → select_resample_points, fnn_forward_body
+  - {pde: Wave1D,               method: adam,      iter: 5000, weight: 0.8}   # → apply_ic_decay, compute_causal_weights（强时序）
+  - {pde: Burgers1D,            method: laaf,      iter: 5000, weight: 0.8}   # → laaf_scale
+  - {pde: Poisson2D_Classic,    method: lbfgs,     iter: 5000, weight: 0.8}   # → select_optimizer
+  - {pde: Wave2D_Heterogeneous, method: adam,      iter: 5000, weight: 0.8}   # → encode_input（高频，谱偏置最典型）
 
 
 # ── 已激活的优化目标 ────────────────────────────────────────────────────────
@@ -120,6 +121,23 @@ registered:
       - {pde: Burgers1D,         method: adam, iter: 5000, weight: 1.0}
       - {pde: Poisson2D_Classic, method: adam, iter: 5000, weight: 1.0}
       - {pde: Heat2D_Multiscale, method: adam, iter: 5000, weight: 0.5}
+
+  - source_file:  src/optimizable/input_encoding_optimizable.py
+    function:     encode_input
+    output_file:  src/optimizable/input_encoding_optimizable.py
+    description:  "输入特征编码：将原始坐标映射到特征空间，缓解 MLP 谱偏置（默认恒等变换）"
+    eval_scenarios:
+      - {pde: Heat2D_Multiscale,    method: adam, iter: 5000, weight: 1.0}  # 多尺度 → 最受谱偏置影响
+      - {pde: Wave2D_Heterogeneous, method: adam, iter: 5000, weight: 1.0}  # 高频波动
+      - {pde: Burgers1D,            method: adam, iter: 5000, weight: 0.8}
+
+  - source_file:  src/optimizable/causal_weight_optimizable.py
+    function:     compute_causal_weights
+    output_file:  src/optimizable/causal_weight_optimizable.py
+    description:  "时序因果损失加权：按因果顺序为各时刻配置点分配权重，早期时刻收敛好才给晚期时刻大权重（默认全1）"
+    eval_scenarios:
+      - {pde: Burgers1D, method: adam, iter: 5000, weight: 1.0}  # 非线性时变
+      - {pde: Wave1D,    method: adam, iter: 5000, weight: 1.0}  # 波传播（强时序依赖）
 
 
 # ── 候选函数库（取消注释并 --apply 即可激活）────────────────────────────────
