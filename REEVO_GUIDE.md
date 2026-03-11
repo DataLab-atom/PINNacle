@@ -111,31 +111,55 @@ python scripts/register_optimizable.py --list
        输出: src/optimizable/multiadam_sadam_optimizable.py
 ```
 
-### 内置候选函数一览
+### 四个方向覆盖总览
 
-#### 训练策略层（optimizer / sampler / weight）
+PINN 求解 PDE 的四个主流研究方向，当前优化目标覆盖情况：
 
-| 函数名 | 状态 | 优化价值 | 探索方向 |
+| 方向 | 覆盖率 | 已注册函数 |
+|------|--------|-----------|
+| **① 网络架构** | ~95% | `encode_input`, `fnn_forward_body`, `laaf_scale`, `apply_ic_decay` |
+| **② 训练优化** | ~90% | `compute_group_update`, `adapt_loss_weights`, `adapt_boundary_weight`, `select_optimizer` |
+| **③ 采样策略** | ~80% | `select_resample_points`, `compute_causal_weights` |
+| **④ 损失设计** | ~80% | `adapt_loss_weights`, `adapt_boundary_weight`, `compute_causal_weights` |
+
+### 已注册函数一览（共 10 个）
+
+#### 方向① 网络架构层
+
+| 函数名 | 优化价值 | 核心探索方向 |
+|--------|----------|-------------|
+| `encode_input` | ⭐⭐⭐ | Random Fourier Features、NERF 位置编码、多尺度特征拼接（缓解谱偏置） |
+| `fnn_forward_body` | ⭐⭐⭐ | 残差连接、Highway 网络、Modified MLP（Wang et al. 2022）、注意力门控 |
+| `apply_ic_decay` | ⭐⭐⭐ | sigmoid/tanh/多项式衰减、空间自适应混合权重 |
+| `laaf_scale` | ⭐⭐ | softplus(a) 有界缩放、归一化缩放、layer-wise vs element-wise |
+
+#### 方向② 训练优化层
+
+| 函数名 | 优化价值 | 核心探索方向 |
+|--------|----------|-------------|
+| `compute_group_update` | ⭐⭐⭐ | 梯度投影（PCGrad）、归一化融合、动态门控权重 |
+| `adapt_loss_weights` | ⭐⭐⭐ | EMA 平滑、对数尺度、分层 NTK 适配 |
+| `adapt_boundary_weight` | ⭐⭐ | 自适应 alpha、权重裁剪、Trust Region 更新 |
+| `select_optimizer` | ⭐⭐ | 损失平台检测切换、梯度范数触发、软切换概率 |
+
+#### 方向③ 采样策略层 / 方向④ 损失设计层
+
+| 函数名 | 方向 | 优化价值 | 核心探索方向 |
+|--------|------|----------|-------------|
+| `select_resample_points` | ③ 采样 | ⭐⭐⭐ | 概率采样、多样性约束、课程式自适应 |
+| `compute_causal_weights` | ③④ 共用 | ⭐⭐⭐ | Wang et al. 2022 因果权重、软因果、自适应 epsilon、反向课程 |
+
+> `compute_causal_weights` 同时作用于采样权重（③）和损失加权（④），
+> 对时变 PDE（Burgers、Wave、Heat 时变类）影响最大，稳态 PDE 中不会被调用。
+
+### 候选函数（可激活）
+
+| 函数名 | 来源 | 优化价值 | 探索方向 |
 |--------|------|----------|----------|
-| `compute_group_update` | ✅ 已注册 | ⭐⭐⭐ | 梯度投影、归一化融合、动态门控 |
-| `adapt_loss_weights` | ✅ 已注册 | ⭐⭐⭐ | EMA 平滑、对数尺度、分层适配 |
-| `select_resample_points` | ✅ 已注册 | ⭐⭐⭐ | 概率采样、多样性约束、课程式 |
-| `adapt_boundary_weight` | ✅ 已注册 | ⭐⭐ | 自适应 alpha、权重裁剪、Trust Region |
-| `select_optimizer` | ✅ 已注册 | ⭐⭐ | 损失平台检测切换、梯度范数触发、软切换概率 |
-| `sadam` | 候选 | ⭐⭐⭐ | AMSGrad、梯度裁剪、动量聚合 |
-| `use_gepinn` | 候选 | ⭐⭐ | 高阶导数、曲率正则、选择性增强 |
-| `random_points` | 候选 | ⭐⭐ | QMC、层次采样、贴边增强 |
-
-#### 模型结构层（model architecture）
-
-| 函数名 | 状态 | 优化价值 | 探索方向 |
-|--------|------|----------|----------|
-| `fnn_forward_body` | ✅ 已注册 | ⭐⭐⭐ | 残差连接、Highway 网络、Modified MLP（Wang et al.）、Fourier 特征嵌入 |
-| `apply_ic_decay` | ✅ 已注册 | ⭐⭐⭐ | sigmoid/tanh 衰减、多项式衰减、空间自适应混合权重 |
-| `laaf_scale` | ✅ 已注册 | ⭐⭐ | softplus(a) 有界缩放、归一化缩放、layer-wise vs element-wise |
-
-> **两层联合优化建议**：使用 `global_eval_scenarios` 联合评估时，`fnn_forward_body` 在所有场景都生效，
-> 建议将其 `weight` 维持在 1.0，避免模型结构变化主导适应度信号而掩盖策略层的改进。
+| `sadam` | `src/optimizer/multiadam.py` | ⭐⭐⭐ | AMSGrad、梯度裁剪、动量聚合 |
+| `use_gepinn` | `src/pde/baseclass.py` | ⭐⭐ | 高阶导数、曲率正则、选择性增强 |
+| `random_points` | `src/utils/geom.py` | ⭐⭐ | QMC、层次采样、贴边增强 |
+| `gaussian_random_field` | `src/utils/random.py` | ⭐⭐ | 自适应功率谱、各向异性场 |
 
 ---
 
@@ -145,29 +169,36 @@ python scripts/register_optimizable.py --list
 
 ### 配置方式
 
-在 `optimizable_config.yaml` 中填写 `global_eval_scenarios`（已预配置）：
+在 `optimizable_config.yaml` 中填写 `global_eval_scenarios`（已预配置 8 个场景）：
 
 ```yaml
 global_eval_scenarios:
-  - {pde: Burgers1D,         method: multiadam, iter: 5000, weight: 1.0}   # 激活 compute_group_update + fnn_forward_body
-  - {pde: Poisson2D_Classic, method: ntk,       iter: 5000, weight: 1.0}   # 激活 adapt_loss_weights + fnn_forward_body
-  - {pde: Heat2D_Multiscale, method: lra,        iter: 5000, weight: 1.0}  # 激活 adapt_boundary_weight + fnn_forward_body
-  - {pde: Burgers1D,         method: rar,        iter: 5000, weight: 1.0}  # 激活 select_resample_points
-  - {pde: Wave1D,            method: adam,       iter: 5000, weight: 0.8}  # 激活 apply_ic_decay
-  - {pde: Burgers1D,         method: laaf,       iter: 5000, weight: 0.8}  # 激活 laaf_scale
-  - {pde: Poisson2D_Classic, method: lbfgs,      iter: 5000, weight: 0.8}  # 激活 select_optimizer
+  - {pde: Burgers1D,            method: multiadam, ...}  # compute_group_update, fnn_forward_body, encode_input, compute_causal_weights
+  - {pde: Poisson2D_Classic,    method: ntk,       ...}  # adapt_loss_weights, fnn_forward_body, encode_input
+  - {pde: Heat2D_Multiscale,    method: lra,       ...}  # adapt_boundary_weight, fnn_forward_body, encode_input（多尺度谱偏置）
+  - {pde: Burgers1D,            method: rar,       ...}  # select_resample_points, fnn_forward_body
+  - {pde: Wave1D,               method: adam,      ...}  # apply_ic_decay, compute_causal_weights（强时序）
+  - {pde: Burgers1D,            method: laaf,      ...}  # laaf_scale
+  - {pde: Poisson2D_Classic,    method: lbfgs,     ...}  # select_optimizer
+  - {pde: Wave2D_Heterogeneous, method: adam,      ...}  # encode_input（高频波动，谱偏置最典型）
 ```
 
 ### 关键机制
 
-**"代码注入但不执行"的情况完全正常：**
+**各函数在 8 个场景中的执行矩阵（✓ = 实际调用 / ✗ = 注入但未执行）：**
 
-| 场景 | `apply_ic_decay` | `laaf_scale` | `fnn_forward_body` |
-|------|-----------------|--------------|-------------------|
-| Burgers1D + multiadam | ✓ 执行（有IC） | ✗ 未调用（非 laaf 方法） | ✓ 执行 |
-| Poisson2D + ntk | ✗ 未调用（无 IC，稳态） | ✗ 未调用 | ✓ 执行 |
-| Wave1D + adam | ✓ 执行（有IC） | ✗ 未调用 | ✓ 执行 |
-| Burgers1D + laaf | ✓ 执行（有IC） | ✓ 执行 | ✓ 执行 |
+| 场景 | `encode_input` | `fnn_forward_body` | `apply_ic_decay` | `compute_causal_weights` | `laaf_scale` | `compute_group_update` | `adapt_loss_weights` | `select_resample_points` | `adapt_boundary_weight` | `select_optimizer` |
+|------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| Burgers1D + multiadam | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Poisson2D + ntk       | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| Heat2D + lra          | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
+| Burgers1D + rar       | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| Wave1D + adam         | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Burgers1D + laaf      | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Poisson2D + lbfgs     | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| Wave2D_Het + adam     | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+每个函数至少在 1 个场景中被真正调用，均能获得有效进化信号。
 
 - ✓ 执行的场景会直接反映在 L2RE 上，作为该函数的有效评估信号
 - ✗ 未调用的场景，该函数代码被注入但从未运行，L2RE 由其他已执行函数决定
