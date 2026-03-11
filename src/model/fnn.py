@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from deepxde import config
 from deepxde.nn import NN
+from src.optimizable.fnn_forward_optimizable import fnn_forward_body  # [OPTIMIZABLE]
 
 initializer_dict = {
     'Glorot normal': torch.nn.init.xavier_normal_,
@@ -43,9 +44,7 @@ class FNN(NN):
         x = inputs
         if self._input_transform is not None:
             x = self._input_transform(x)
-        for linear in self.linears[:-1]:
-            x = self.activation(linear(x))
-        x = self.linears[-1](x)
+        x = fnn_forward_body(x, self.linears, self.activation)  # [OPTIMIZABLE]
         if self._output_transform is not None:
             x = self._output_transform(inputs, x)
         return x

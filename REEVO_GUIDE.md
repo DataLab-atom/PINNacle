@@ -113,6 +113,8 @@ python scripts/register_optimizable.py --list
 
 ### 内置候选函数一览
 
+#### 训练策略层（optimizer / sampler / weight）
+
 | 函数名 | 来源文件 | 优化价值 | 探索方向 |
 |--------|----------|----------|----------|
 | `compute_group_update` | `src/optimizable/multiadam_optimizable.py` | ⭐⭐⭐ | 梯度投影、归一化融合、动态门控 |
@@ -122,6 +124,17 @@ python scripts/register_optimizable.py --list
 | `sadam` | `src/optimizer/multiadam.py` | ⭐⭐⭐ | AMSGrad、梯度裁剪、动量聚合 |
 | `use_gepinn` | `src/pde/baseclass.py` | ⭐⭐ | 高阶导数、曲率正则、选择性增强 |
 | `random_points` | `src/utils/geom.py` | ⭐⭐ | QMC、层次采样、贴边增强 |
+
+#### 模型结构层（model architecture）
+
+| 函数名 | 来源文件 | 优化价值 | 探索方向 |
+|--------|----------|----------|----------|
+| `fnn_forward_body` | `src/optimizable/fnn_forward_optimizable.py` | ⭐⭐⭐ | 残差连接、Highway 网络、Modified MLP（Wang et al.）、Fourier 特征嵌入 |
+| `apply_ic_decay` | `src/optimizable/hard_constraint_optimizable.py` | ⭐⭐⭐ | sigmoid/tanh 衰减、多项式衰减、空间自适应混合权重 |
+| `laaf_scale` | `src/optimizable/laaf_optimizable.py` | ⭐⭐ | softplus(a) 有界缩放、归一化缩放、layer-wise vs element-wise |
+
+> **两层联合优化建议**：若同时开启训练策略层 + 模型结构层，建议将 `fnn_forward_body` 的
+> `weight` 设置为 1.5（加大权重），因为结构改变对不同 PDE 的影响差异更大，需要更稳健的适应度信号。
 
 ---
 

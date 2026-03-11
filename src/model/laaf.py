@@ -1,5 +1,6 @@
 from collections import OrderedDict
 import torch
+from src.optimizable.laaf_optimizable import laaf_scale  # [OPTIMIZABLE]
 
 
 class LAAFlayer(torch.nn.Module):
@@ -16,7 +17,7 @@ class LAAFlayer(torch.nn.Module):
 
     def forward(self, x):
         x1 = self.fc(x)
-        x2 = self.n * torch.mul(self.a, x1)
+        x2 = laaf_scale(x1, self.a, self.n)  # [OPTIMIZABLE]
         out = self.activation(x2)
         return out
 

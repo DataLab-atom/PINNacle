@@ -61,6 +61,33 @@ registered:
       - {pde: Burgers1D,         method: lra, iter: 5000, weight: 1.0}
       - {pde: Poisson2D_Classic, method: lra, iter: 5000, weight: 1.0}
 
+  # ── 模型结构层（新增）─────────────────────────────────────────────────────
+
+  - source_file:  src/optimizable/hard_constraint_optimizable.py
+    function:     apply_ic_decay
+    output_file:  src/optimizable/hard_constraint_optimizable.py
+    description:  "IC 硬约束衰减混合：用时间衰减权重将初始条件与网络输出混合，确保 t=0 时精确满足 IC"
+    eval_scenarios:
+      - {pde: Burgers1D,   method: adam, iter: 5000, weight: 1.0}
+      - {pde: Wave1D,      method: adam, iter: 5000, weight: 1.0}
+
+  - source_file:  src/optimizable/laaf_optimizable.py
+    function:     laaf_scale
+    output_file:  src/optimizable/laaf_optimizable.py
+    description:  "LAAF 局部自适应激活缩放：逐神经元可学习参数 a 控制激活函数的局部斜率/增益"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: laaf, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale, method: laaf, iter: 5000, weight: 1.0}
+
+  - source_file:  src/optimizable/fnn_forward_optimizable.py
+    function:     fnn_forward_body
+    output_file:  src/optimizable/fnn_forward_optimizable.py
+    description:  "FNN 核心前向传播：标准全连接隐层计算，可探索残差连接、Highway 网络、Modified MLP 等结构变体"
+    eval_scenarios:
+      - {pde: Burgers1D,         method: adam, iter: 5000, weight: 1.0}
+      - {pde: Poisson2D_Classic, method: adam, iter: 5000, weight: 1.0}
+      - {pde: Heat2D_Multiscale, method: adam, iter: 5000, weight: 0.5}
+
 
 # ── 候选函数库（取消注释并 --apply 即可激活）────────────────────────────────
 # 每条候选项描述了函数来源和优化价值，供你选择
