@@ -17,12 +17,22 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+import logging
 import textwrap
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 ROOT         = Path(__file__).parent
 OPTIMIZABLE  = ROOT / "src" / "optimizable"
+
+logger = logging.getLogger(__name__)
+
+# 评估计数器（线程安全），用于在日志中标记第几次评估
+_eval_counter     = 0
+_eval_counter_lock = threading.Lock()
 
 # ── 评估场景：每场景在 benchmark_single.py 中对应一个 --pde 参数 ──────────────
 
@@ -199,7 +209,16 @@ def evaluate_funcs(
         for f in modified
     ]
 
-    # 运行实验（注入 → 训练 → 还原）
+    # 分配评估序号
+    global _eval_counter
+    with _eval_counter_lock:
+        _eval_counter += 1
+        eval_id = _eval_counter
+
+    logger.info("=== eval #%d start  funcs=%s ===",
+                eval_id, [r["function"] for r in replacements])
+
+    # 运行实验
     results = run_experiment(
         replacements=replacements,
         scenarios=active_scenarios,
@@ -209,8 +228,8 @@ def evaluate_funcs(
     # 转换为 ReEvo2D 评分格式
     scores: list[dict] = []
     for sc in active_scenarios:
-        key      = f"{sc['pde']}_{sc['method']}"
-        l2re     = results.get(key, {}).get("final_l2re", float("inf"))
+        key  = f"{sc['pde']}_{sc['method']}"
+        l2re = results.get(key, {}).get("final_l2re", float("inf"))
         scores.append({
             "name":      f"L2RE_{key}",
             "value":     l2re,
@@ -220,5 +239,36 @@ def evaluate_funcs(
 
     if all(s["value"] == float("inf") for s in scores):
         raise RuntimeError("所有评估场景均失败，请检查注入的函数实现")
+
+    logger.info("=== eval #%d done   scores=%s ===",
+                eval_id, {s["name"]: s["value"] for s in scores})
+
+    # ── 持久化评估历史（JSONL，每行一条记录）──────────────────────────────────
+    record = {
+        "eval_id":      eval_id,
+        "timestamp":    time.time(),
+        "replacements": [{"function": r["function"], "file": r["file"],
+                          "code": r["code"]} for r in replacements],
+        "scores":       scores,
+        "returncode":   {k: v["returncode"] for k, v in results.items()},
+    }
+    try:
+        with open("eval_history.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("eval_history.jsonl 写入失败：%s", e)
+
+    # ── 失败场景保存完整 stdout 供诊断 ────────────────────────────────────────
+    for key, r in results.items():
+        if r["returncode"] != 0 and r.get("stdout"):
+            err_dir = Path("eval_errors")
+            err_dir.mkdir(exist_ok=True)
+            log_path = err_dir / f"eval{eval_id:04d}_{key}.log"
+            try:
+                log_path.write_text(r["stdout"], encoding="utf-8")
+                logger.warning("场景 %s 失败（code=%d），stdout → %s",
+                               key, r["returncode"], log_path)
+            except OSError as e:
+                logger.warning("错误日志写入失败：%s", e)
 
     return scores

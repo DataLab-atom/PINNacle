@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 import sys
 import textwrap
@@ -44,6 +45,8 @@ from typing import Optional
 ROOT        = Path(__file__).parent.parent
 OPTIMIZABLE = ROOT / "src" / "optimizable"
 RUNNER      = Path(__file__).parent / "_runner.py"
+
+logger = logging.getLogger(__name__)
 
 _FLOAT = r"([\deE+\-\.]+)"
 _METRIC_RE = {
@@ -116,16 +119,16 @@ def run_experiment(
     for rep in replacements:
         source = (OPTIMIZABLE / rep["file"]).read_text(encoding="utf-8")
         _find_function_range(source, rep["function"])
-        print(f"[patch] {rep['file']}::{rep['function']}", file=sys.stderr)
+        logger.info("[patch] %s::%s", rep["file"], rep["function"])
 
     results: dict[str, dict] = {}
     for sc in scenarios:
         key = f"{sc['pde']}_{sc.get('method', 'adam')}"
-        print(f"[run]   {key}, epochs={epochs or sc.get('iter', '?')}", file=sys.stderr)
+        logger.info("[run]   %s  epochs=%s", key, epochs or sc.get("iter", "?"))
         results[key] = _run_scenario(sc, epochs, replacements)
         rc   = results[key]["returncode"]
         l2re = results[key].get("final_l2re", "N/A")
-        print(f"[done]  {key}, returncode={rc}, final_l2re={l2re}", file=sys.stderr)
+        logger.info("[done]  %s  returncode=%d  final_l2re=%s", key, rc, l2re)
 
     return results
 
