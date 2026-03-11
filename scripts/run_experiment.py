@@ -42,19 +42,16 @@ def compute_group_update(exp_avg, denom, group_weights):
   }
 }
 
-线程安全：run_experiment() 为每次调用创建独立的临时目录，
-不修改任何共享文件，ThreadPoolExecutor 并发调用安全。
+线程安全：注入操作在子进程内存中完成（sys.modules），不写磁盘文件，
+ThreadPoolExecutor 并发调用天然无冲突。
 """
 
 from __future__ import annotations
 
 import ast
 import json
-import os
 import re
-import shutil
 import sys
-import tempfile
 import textwrap
 import argparse
 import subprocess
@@ -73,6 +70,43 @@ _METRIC_RE = {
     "val_l2re_last": re.compile(rf"Validation L2RE:\s+{_FLOAT}"),
     "final_l2re":    re.compile(rf"Final L2RE:\s+{_FLOAT}"),
 }
+
+# ── 子进程注入器：在子进程内将 patch 写入 sys.modules，不碰磁盘 ────────────────
+#
+# 通过 python -c '_INJECTOR' <root> <patches_json> [benchmark args...] 调用。
+# 注入完成后直接调用 benchmark_single.main()，与正常运行完全等价。
+
+_INJECTOR = r"""
+import sys, ast, json, types, textwrap
+from pathlib import Path
+
+root       = Path(sys.argv.pop(1))
+patches    = json.loads(sys.argv.pop(1))
+
+sys.path.insert(0, str(root))
+
+def _patch_source(source, func_name, new_code):
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            new_code = textwrap.dedent(new_code).strip() + "\n"
+            lines = source.splitlines(keepends=True)
+            return "".join(lines[:node.lineno - 1]) + new_code + "\n" + "".join(lines[node.end_lineno:])
+    raise ValueError(f"function {func_name!r} not found")
+
+for p in patches:
+    fname   = p["file"]
+    mname   = "src.optimizable." + fname.removesuffix(".py")
+    fpath   = root / "src" / "optimizable" / fname
+    source  = _patch_source(fpath.read_text(), p["function"], p["code"])
+    mod = types.ModuleType(mname)
+    mod.__file__ = str(fpath)
+    exec(compile(source, str(fpath), "exec"), mod.__dict__)
+    sys.modules[mname] = mod
+
+import benchmark_single
+benchmark_single.main()
+"""
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -109,60 +143,24 @@ def _parse_metrics(stdout: str) -> dict:
     return metrics
 
 
-def _make_isolated_root(patched_files: dict[str, str]) -> Path:
+def _run_scenario(scenario: dict, epochs: Optional[int], replacements: list[dict]) -> dict:
     """
-    创建隔离工作目录供子进程使用。
-
-    tmpdir/
-      benchmark_single.py   ← 真实副本（保证 sys.path[0] = tmpdir）
-      src/
-        <其他子包>/          ← symlink 到 ROOT/src/<子包>
-        optimizable/         ← 真实目录，含已打补丁的 .py 文件
-      <其他 ROOT 内容>/      ← symlink 到 ROOT/...（ref/ 等数据目录）
+    启动子进程，在其 sys.modules 中注入 patch 后运行 benchmark_single.main()。
+    不写任何磁盘文件，多线程并发安全。
     """
-    tmpdir = Path(tempfile.mkdtemp(prefix="reevo_eval_"))
-
-    # benchmark_single.py：必须是真实副本，symlink 会导致 sys.path[0] 被解析为 ROOT
-    shutil.copy2(ROOT / "benchmark_single.py", tmpdir / "benchmark_single.py")
-
-    # ROOT 下其余文件/目录（ref/ 等）：symlink
-    for item in ROOT.iterdir():
-        if item.name in {"src", "benchmark_single.py", "scripts"}:
-            continue
-        (tmpdir / item.name).symlink_to(item)
-
-    # src/：重建目录结构，子包 symlink，optimizable 单独处理
-    src_tmp = tmpdir / "src"
-    src_tmp.mkdir()
-    for item in (ROOT / "src").iterdir():
-        if item.name == "optimizable":
-            continue
-        (src_tmp / item.name).symlink_to(item)
-
-    # src/optimizable/：真实副本，按需写入打补丁的文件
-    opt_tmp = src_tmp / "optimizable"
-    opt_tmp.mkdir()
-    for f in OPTIMIZABLE.iterdir():
-        if f.is_file():
-            content = patched_files.get(f.name) or f.read_text(encoding="utf-8")
-            (opt_tmp / f.name).write_text(content, encoding="utf-8")
-
-    return tmpdir
-
-
-def _run_scenario(scenario: dict, epochs: Optional[int], root: Path) -> dict:
-    """运行单个场景（benchmark_single.py 子进程），返回指标 + returncode + stdout。"""
     pde    = scenario["pde"]
     method = scenario.get("method", "adam")
     iters  = epochs if epochs is not None else scenario.get("iter", 10000)
 
     cmd = [
-        sys.executable, str(root / "benchmark_single.py"),
+        sys.executable, "-c", _INJECTOR,
+        str(ROOT),
+        json.dumps(replacements, ensure_ascii=False),
         "--pde",    pde,
         "--iter",   str(iters),
         "--method", method,
     ]
-    proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
     stdout = proc.stdout + ("\n[STDERR]\n" + proc.stderr if proc.stderr.strip() else "")
 
     metrics = _parse_metrics(stdout)
@@ -201,27 +199,20 @@ def run_experiment(
     if scenarios is None:
         raise ValueError("scenarios 不能为 None，请由 pinnacle_api.evaluate_funcs 传入")
 
-    # 内存中构建补丁内容（只读原文件）
-    patched_files: dict[str, str] = {}
     for rep in replacements:
-        fname = rep["file"]
-        base  = patched_files.get(fname) or (OPTIMIZABLE / fname).read_text(encoding="utf-8")
-        patched_files[fname] = _patch_source(base, rep["function"], rep["code"])
-        print(f"[patch] {fname}::{rep['function']}", file=sys.stderr)
+        # 提前校验函数名存在（快速失败，避免子进程启动后才报错）
+        source = (OPTIMIZABLE / rep["file"]).read_text(encoding="utf-8")
+        _find_function_range(source, rep["function"])
+        print(f"[patch] {rep['file']}::{rep['function']}", file=sys.stderr)
 
-    # 创建隔离工作目录，运行场景，清理
-    tmpdir = _make_isolated_root(patched_files)
     results: dict[str, dict] = {}
-    try:
-        for sc in scenarios:
-            key = f"{sc['pde']}_{sc.get('method', 'adam')}"
-            print(f"[run]   {key}, epochs={epochs or sc.get('iter', '?')}", file=sys.stderr)
-            results[key] = _run_scenario(sc, epochs, root=tmpdir)
-            rc   = results[key]["returncode"]
-            l2re = results[key].get("final_l2re", "N/A")
-            print(f"[done]  {key}, returncode={rc}, final_l2re={l2re}", file=sys.stderr)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    for sc in scenarios:
+        key = f"{sc['pde']}_{sc.get('method', 'adam')}"
+        print(f"[run]   {key}, epochs={epochs or sc.get('iter', '?')}", file=sys.stderr)
+        results[key] = _run_scenario(sc, epochs, replacements)
+        rc   = results[key]["returncode"]
+        l2re = results[key].get("final_l2re", "N/A")
+        print(f"[done]  {key}, returncode={rc}, final_l2re={l2re}", file=sys.stderr)
 
     return results
 
